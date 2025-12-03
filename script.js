@@ -52,7 +52,16 @@ function initializeApp() {
     }
 
     // Display name
-    displayName = localStorage.getItem("fn_name") || userId;
+    let storedName = localStorage.getItem("fn_name");
+    if (!storedName) {
+      // If user has never set a name, assign a friendly fallback like "User 1", "User 2", ...
+      const currentNumber = parseInt(localStorage.getItem("fn_user_number") || "0", 10) || 0;
+      const nextNumber = currentNumber + 1;
+      localStorage.setItem("fn_user_number", String(nextNumber));
+      storedName = `User ${nextNumber}`;
+      localStorage.setItem("fn_name", storedName);
+    }
+    displayName = storedName;
     
     initApp();
   } catch (error) {
