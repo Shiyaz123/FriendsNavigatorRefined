@@ -760,6 +760,18 @@ function initApp() {
     }
   }
 
+  // Persist display name when it comes from a prompt or other source (non-input)
+  function persistDisplayNameValue(value) {
+    if (!value) return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    displayName = trimmed;
+    localStorage.setItem("fn_name", displayName);
+    if (currentTeam) {
+      db.ref(`teams/${currentTeam}/members/${userId}`).update({ name: displayName });
+    }
+  }
+
   function prefillDisplayNameInput(inputEl) {
     if (!inputEl) return;
     inputEl.value = displayName || "";
@@ -834,22 +846,25 @@ function initApp() {
     // Handled by Firebase listeners
   }
 
-  function bumpRecentTeamUsage(teamId, teamName) {
+  function bumpRecentTeamUsage(teamId, teamName, createdAt) {
     if (!teamId) return;
     db.ref(`recentTeams/${teamId}`).transaction(current => {
       const now = Date.now();
+      const created = current?.createdAt || createdAt || now;
       if (current) {
         return {
           ...current,
           name: teamName || current.name || teamId,
           lastUsed: now,
-          uses: (current.uses || 0) + 1
+          uses: (current.uses || 0) + 1,
+          createdAt: created
         };
       }
       return {
         name: teamName || teamId,
         lastUsed: now,
-        uses: 1
+        uses: 1,
+        createdAt: created
       };
     });
   }
@@ -913,8 +928,9 @@ function initApp() {
         id,
         ...teams[id]
       })).sort((a, b) => {
-        const useDiff = (b.uses || 0) - (a.uses || 0);
-        if (useDiff !== 0) return useDiff;
+        // Sort by most recently created; fallback to lastUsed
+        const createdDiff = (b.createdAt || 0) - (a.createdAt || 0);
+        if (createdDiff !== 0) return createdDiff;
         return (b.lastUsed || 0) - (a.lastUsed || 0);
       }).slice(0, 5);
 
@@ -929,7 +945,7 @@ function initApp() {
       sorted.forEach(team => {
         const li = document.createElement("li");
         li.className = "recent-item";
-        const usageText = team.uses ? `${team.uses}× used` : "Recently used";
+        const usageText = team.createdAt ? `Created ${new Date(team.createdAt).toLocaleString()}` : "Recently created";
         li.innerHTML = `
           <div>
             <strong>${team.name}</strong>
@@ -937,7 +953,14 @@ function initApp() {
           </div>
           <span class="recent-action">Join →</span>
         `;
-        li.onclick = () => joinTeam(team.id, { teamName: team.name });
+        li.onclick = () => {
+          // Ask for a display name before joining from the recent list
+          const namePrompt = prompt("Enter your display name (shown to the team):", displayName || "");
+          if (namePrompt && namePrompt.trim()) {
+            persistDisplayNameValue(namePrompt);
+          }
+          joinTeam(team.id, { teamName: team.name, createdAt: team.createdAt });
+        };
         recentList.appendChild(li);
       });
     });
@@ -969,12 +992,23 @@ function initApp() {
   if (createSubmit) {
     createSubmit.onclick = async () => {
       persistDisplayNameFromInput(createDisplayNameInput);
-      const name = createName.value.trim() || "Team";
-      const id = name.replace(/[^a-zA-Z0-9]/g, "") + "_" + Date.now().toString(36);
+      const rawName = createName.value.trim() || "Team";
+      // Use a stable, shareable team id derived from the name so others can join it
+      let id = rawName
+        .toLowerCase()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9-]/g, "");
+      if (!id) {
+        id = "team-" + Math.random().toString(36).slice(2, 6);
+      }
+      // If the id already exists, append a short suffix to avoid collision
+      const finalId = id;
+      const createdAt = Date.now();
 
       try {
-        await db.ref("teams/" + id).set({ name, createdAt: Date.now() });
-        joinTeam(id, { teamName: name });
+        await db.ref("teams/" + finalId).set({ name: rawName, createdAt });
+        alert(`Team created!\nShare this ID with friends so they join the SAME team:\n\n${finalId}`);
+        joinTeam(finalId, { teamName: rawName, createdAt });
       } catch (error) {
         console.error("Error creating team:", error);
         alert("Failed to create team. Check console for details.");
@@ -1004,6 +1038,7 @@ function initApp() {
   function joinTeam(teamId, options = {}) {
     if (!teamId) return alert("Enter a valid team ID");
     const providedName = options.teamName;
+    const createdAt = options.createdAt;
 
     currentTeam = teamId;
     window.userId = userId; // For global functions
@@ -1026,7 +1061,7 @@ function initApp() {
     // Start location tracking
     startGeolocation();
 
-    bumpRecentTeamUsage(teamId, providedName);
+    bumpRecentTeamUsage(teamId, providedName, createdAt);
 
     // Load initial data
     loadInitialTeamData(teamId);
